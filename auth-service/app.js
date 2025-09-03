@@ -56,6 +56,36 @@ async function connectRabbitMQ() {
   }
 }
 
+// Функция-middleware для проверки токена (уже определённая ранее)
+const authenticateToken = (req, res, next) => {
+  const authHeader = req.headers['authorization'];
+  const token = authHeader && authHeader.split(' ')[1]; // Получаем токен из заголовков Authorization
+
+  if (!token) return res.status(401).json({ error: 'Access denied' }); // Нет токена
+
+  try {
+    const decoded = jwt.verify(token, SECRET_KEY); // Декодируем токен
+    req.user = decoded; // Прикрепляем данные пользователя к объекту запроса
+    next(); // Продолжаем цепочку обработчиков
+  } catch (err) {
+    return res.status(403).json({ error: 'Invalid token' }); // Некорректный токен
+  }
+};
+
+// Получение списка пользователей (только для авторов запросов с токеном)
+app.get('/users', authenticateToken, async (req, res) => {
+  try {
+    const client = await pool.connect();
+    const result = await client.query('SELECT id, username, email, full_name, city FROM users'); // SELECT * нежелателен для публичного доступа
+    client.release();
+
+    res.status(200).json(result.rows);
+  } catch (error) {
+    console.error('Error fetching users:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 // Регистрация пользователя
 app.post('/register', async (req, res) => {
   const { username, password, email, full_name, city } = req.body;
@@ -88,7 +118,7 @@ app.post('/register', async (req, res) => {
     const token = jwt.sign({ id: user.id, username }, SECRET_KEY, { expiresIn: '1h' });
     res.status(201).json({ token, user });
   } catch (error) {
-    if (error.code === '23505') { // Unique violation
+    if (error.code === '23505') { // Уникальность нарушена
       res.status(400).json({ error: 'User already exists' });
     } else {
       console.error('Registration error:', error);
@@ -136,6 +166,46 @@ app.post('/validate', (req, res) => {
     res.json({ valid: true, user: decoded });
   } catch (error) {
     res.json({ valid: false });
+  }
+});
+
+
+// Удаление пользователя (с защитой по токену)
+app.delete('/delete-user/:id', authenticateToken, async (req, res) => {
+  const userId = parseInt(req.params.id);
+
+  try {
+    // Получаем текущего пользователя из токена
+    const currentUserId = req.user.id;
+
+    // Проверяем, что удаляет себя сам пользователь или администратор
+    if (currentUserId !== userId /* && !(req.user.isAdmin)*/) {
+      return res.status(403).json({ message: 'You are not allowed to delete this user' });
+    }
+
+    // Делаем выборку пользователя по ID
+    const client = await pool.connect();
+    const selectResult = await client.query(
+      'SELECT * FROM users WHERE id = $1',
+      [userId]
+    );
+
+    if (selectResult.rows.length === 0) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    // Удаляем пользователя
+    await client.query(
+      'DELETE FROM users WHERE id = $1',
+      [userId]
+    );
+
+    client.release();
+
+    res.status(200).json({ message: 'User deleted successfully' });
+  } catch (error) {
+    console.error('Delete user error:', error);
+    res.status(500).json({ error: 'Failed to delete user' });
   }
 });
 
