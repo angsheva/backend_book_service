@@ -56,19 +56,19 @@ async function connectRabbitMQ() {
   }
 }
 
-// Функция-middleware для проверки токена (уже определённая ранее)
+// Функция для проверки токена 
 const authenticateToken = (req, res, next) => {
   const authHeader = req.headers['authorization'];
   const token = authHeader && authHeader.split(' ')[1]; // Получаем токен из заголовков Authorization
 
-  if (!token) return res.status(401).json({ error: 'Access denied' }); // Нет токена
+  if (!token) return res.status(401).json({ error: 'Access denied' }); 
 
   try {
-    const decoded = jwt.verify(token, SECRET_KEY); // Декодируем токен
-    req.user = decoded; // Прикрепляем данные пользователя к объекту запроса
-    next(); // Продолжаем цепочку обработчиков
+    const decoded = jwt.verify(token, SECRET_KEY); 
+    req.user = decoded; 
+    next(); 
   } catch (err) {
-    return res.status(403).json({ error: 'Invalid token' }); // Некорректный токен
+    return res.status(403).json({ error: 'Invalid token' }); 
   }
 };
 
@@ -76,7 +76,7 @@ const authenticateToken = (req, res, next) => {
 app.get('/users', authenticateToken, async (req, res) => {
   try {
     const client = await pool.connect();
-    const result = await client.query('SELECT id, username, email, full_name, city FROM users'); // SELECT * нежелателен для публичного доступа
+    const result = await client.query('SELECT id, username, email, full_name, city FROM users'); 
     client.release();
 
     res.status(200).json(result.rows);
@@ -170,7 +170,7 @@ app.post('/validate', (req, res) => {
 });
 
 
-// Удаление пользователя (с защитой по токену)
+// Удаление пользователя (с проверко токена)
 app.delete('/delete-user/:id', authenticateToken, async (req, res) => {
   const userId = parseInt(req.params.id);
 
@@ -178,7 +178,7 @@ app.delete('/delete-user/:id', authenticateToken, async (req, res) => {
     // Получаем текущего пользователя из токена
     const currentUserId = req.user.id;
 
-    // Проверяем, что удаляет себя сам пользователь или администратор
+    // Проверяем, что удаляет себя сам пользователь (или администратор (добавлю позже, надо еще ему акк создать))
     if (currentUserId !== userId /* && !(req.user.isAdmin)*/) {
       return res.status(403).json({ message: 'You are not allowed to delete this user' });
     }
