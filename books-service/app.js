@@ -2,9 +2,15 @@ const express = require('express');
 const amqp = require('amqplib');
 const fetch = require('node-fetch');
 const { Pool } = require('pg');
+const http = require('http');
+const io = require('socket.io');
+const swaggerJsdoc = require("swagger-jsdoc");
+const swaggerUi = require("swagger-ui-express");
+const cors = require('cors');
 
 const app = express();
 app.use(express.json());
+app.use(cors());
 
 const RABBITMQ_URL = process.env.RABBITMQ_URL || 'amqp://localhost:5672';
 const DATABASE_URL = process.env.DATABASE_URL || 'postgresql://bookcrossing:password@localhost:5432/bookcrossing_db';
@@ -13,6 +19,44 @@ const AUTH_SERVICE_URL = process.env.AUTH_SERVICE_URL || 'http://localhost:3001'
 // Подключение к PostgreSQL
 const pool = new Pool({
   connectionString: DATABASE_URL,
+});
+
+// Конфигурация Swagger
+const options = {
+  definition: {
+    openapi: "3.0.0",
+    info: {
+      title: "Books Service API Documentation",
+      version: "1.0.0",
+      description: "Документация для сервиса управления книгами.",
+    },
+    servers: [
+      {
+        url: "http://localhost:3002",
+      },
+    ],
+    components: {
+      securitySchemes: {
+        bearerAuth: {
+          type: "http",
+          scheme: "bearer",
+          bearerFormat: "JWT",
+        },
+      },
+    },
+  },
+  apis: ["./*.js"], // Указываем текущий файл для сканирования JSDoc
+};
+
+// Генерация документации
+const specs = swaggerJsdoc(options);
+
+// Интеграция Swagger UI
+app.use("/docs", swaggerUi.serve, swaggerUi.setup(specs));
+
+// Обработчик корневого маршрута
+app.get('/', (req, res) => {
+  res.redirect('/docs');
 });
 
 // Инициализация таблиц
@@ -62,7 +106,12 @@ async function sendEvent(eventType, eventData) {
   })));
 }
 
-// Middleware для проверки токена
+/**
+ * Middleware для аутентификации пользователя
+ * @param {Object} req - Объект запроса
+ * @param {Object} res - Объект ответа
+ * @param {Function} next - Следующая функция middleware
+ */
 const authenticate = async (req, res, next) => {
   const authHeader = req.headers.authorization;
   if (!authHeader) {
@@ -95,7 +144,54 @@ const authenticate = async (req, res, next) => {
   }
 };
 
-// Эндпоинты для книг
+/**
+ * @openapi
+ * components:
+ *   schemas:
+ *     Book:
+ *       type: object
+ *       properties:
+ *         id:
+ *           type: integer
+ *           format: int64
+ *         title:
+ *           type: string
+ *         author:
+ *           type: string
+ *         owner_id:
+ *           type: integer
+ *           format: int64
+ *         status:
+ *           type: string
+ *         created_at:
+ *           type: string
+ *           format: date-time
+ */
+
+/**
+ * @openapi
+ * /books:
+ *   get:
+ *     summary: Получить список книг пользователя
+ *     description: Возвращает список книг, принадлежащих текущему пользователю
+ *     operationId: getBooks
+ *     tags: [Books]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Список книг успешно получен
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: array
+ *               items:
+ *                 $ref: '#/components/schemas/Book'
+ *       401:
+ *         description: Неавторизованный доступ
+ *       500:
+ *         description: Ошибка сервера
+ */
 app.get('/books', authenticate, async (req, res) => {
   try {
     const client = await pool.connect();
@@ -111,6 +207,42 @@ app.get('/books', authenticate, async (req, res) => {
   }
 });
 
+/**
+ * @openapi
+ * /books:
+ *   post:
+ *     summary: Создать новую книгу
+ *     description: Добавляет новую книгу в коллекцию пользователя
+ *     operationId: createBook
+ *     tags: [Books]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [title, author]
+ *             properties:
+ *               title:
+ *                 type: string
+ *                 example: "Война и мир"
+ *               author:
+ *                 type: string
+ *                 example: "Лев Толстой"
+ *     responses:
+ *       201:
+ *         description: Книга успешно создана
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Book'
+ *       401:
+ *         description: Неавторизованный доступ
+ *       500:
+ *         description: Ошибка сервера
+ */
 app.post('/books', authenticate, async (req, res) => {
   const { title, author } = req.body;
   
@@ -126,6 +258,9 @@ app.post('/books', authenticate, async (req, res) => {
     
     // Отправляем событие о создании книги
     await sendEvent('BOOK_CREATED', book);
+
+    // Оповещаем через веб-сокеты
+    socketIo.emit('book_added', { book });
     
     res.status(201).json(book);
   } catch (error) {
@@ -134,7 +269,49 @@ app.post('/books', authenticate, async (req, res) => {
   }
 });
 
-// Эндпоинт для изменения статуса книги
+/**
+ * @openapi
+ * /books/{id}/status:
+ *   put:
+ *     summary: Изменить статус книги
+ *     description: Обновляет статус книги (available, exchanged, etc.)
+ *     operationId: updateBookStatus
+ *     tags: [Books]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: integer
+ *           format: int64
+ *         description: ID книги
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [status]
+ *             properties:
+ *               status:
+ *                 type: string
+ *                 example: "exchanged"
+ *     responses:
+ *       200:
+ *         description: Статус книги успешно обновлен
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Book'
+ *       401:
+ *         description: Неавторизованный доступ
+ *       404:
+ *         description: Книга не найдена
+ *       500:
+ *         description: Ошибка сервера
+ */
 app.put('/books/:id/status', authenticate, async (req, res) => {
   const { status } = req.body;
   const { id } = req.params;
@@ -163,8 +340,24 @@ app.put('/books/:id/status', authenticate, async (req, res) => {
   }
 });
 
+// Создание HTTP-сервера вокруг Express-приложения
+const server = http.createServer(app);
+
+// Инициализация WebSockets
+const socketIo = io(server);
+
+// Обработчик подключения нового клиента
+socketIo.on('connection', (socket) => {
+  console.log('A user connected');
+
+  // Обработка отключения клиента
+  socket.on('disconnect', () => {
+    console.log('User disconnected');
+  });
+});
+
 const PORT = 3002;
-app.listen(PORT, async () => {
+server.listen(PORT, async () => {
   console.log(`Books service running on port ${PORT}`);
   await initDatabase();
   await connectRabbitMQ();
