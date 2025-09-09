@@ -1,0 +1,95 @@
+# version: '3.8'
+
+services:
+  rabbitmq:
+    image: rabbitmq:3-management
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    networks:
+      - bookcrossing-network
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "check_port_connectivity"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  postgres:
+  
+    image: postgres:13
+    environment:
+      POSTGRES_USER: bookcrossing
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: bookcrossing_db
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - bookcrossing-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bookcrossing -d bookcrossing_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+      
+
+  auth-service:
+    build: ./auth-service
+    image: auth-service-image
+    container_name: auth-service-container
+    ports:
+      - "3001:3001"
+    environment:
+      - RABBITMQ_URL=amqp://rabbitmq:5672
+      - DATABASE_URL=postgresql://bookcrossing:password@postgres:5432/bookcrossing_db
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    networks:
+      - bookcrossing-network
+
+  books-service:
+    build: ./books-service
+    image: books-service-image
+    container_name: books-service-container
+    ports:
+      - "3002:3002"
+    environment:
+      - RABBITMQ_URL=amqp://rabbitmq:5672
+      - DATABASE_URL=postgresql://bookcrossing:password@postgres:5432/bookcrossing_db
+      - AUTH_SERVICE_URL=http://auth-service:3001
+    depends_on:
+      - rabbitmq
+      - postgres
+      - auth-service
+    networks:
+      - bookcrossing-network
+
+  exchange-service:
+    build: ./exchange-service
+    image: exchange-service-image
+    container_name: exchange-service-container
+    ports:
+      - "3003:3003"
+    environment:
+      - RABBITMQ_URL=amqp://rabbitmq:5672
+      - DATABASE_URL=postgresql://bookcrossing:password@postgres:5432/bookcrossing_db
+      - AUTH_SERVICE_URL=http://auth-service:3001
+    depends_on:
+      - rabbitmq
+      - postgres
+      - auth-service
+    networks:
+      - bookcrossing-network
+
+volumes:
+  postgres_data:
+
+networks:
+  bookcrossing-network:
+    driver: bridge
+  

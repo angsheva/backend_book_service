@@ -12,9 +12,19 @@ const app = express();
 app.use(express.json());
 app.use(cors());
 
-const RABBITMQ_URL = process.env.RABBITMQ_URL || 'amqp://localhost:5672';
-const DATABASE_URL = process.env.DATABASE_URL || 'postgresql://bookcrossing:password@localhost:5432/bookcrossing_db';
-const AUTH_SERVICE_URL = process.env.AUTH_SERVICE_URL || 'http://localhost:3001';
+// Исправленные значения с fallback на docker-compose имена
+const RABBITMQ_URL = process.env.RABBITMQ_URL || 'amqp://rabbitmq:5672';
+const DATABASE_URL = process.env.DATABASE_URL || 'postgresql://bookcrossing:password@postgres:5432/bookcrossing_db';
+const AUTH_SERVICE_URL = process.env.AUTH_SERVICE_URL || 'http://auth-service:3001';
+
+// Отладочный вывод
+console.log('Environment variables:');
+console.log('RABBITMQ_URL from env:', process.env.RABBITMQ_URL);
+console.log('DATABASE_URL from env:', process.env.DATABASE_URL);
+console.log('AUTH_SERVICE_URL from env:', process.env.AUTH_SERVICE_URL);
+console.log('Using RABBITMQ_URL:', RABBITMQ_URL);
+console.log('Using DATABASE_URL:', DATABASE_URL);
+console.log('Using AUTH_SERVICE_URL:', AUTH_SERVICE_URL);
 
 // Подключение к PostgreSQL
 const pool = new Pool({
@@ -45,7 +55,7 @@ const options = {
       },
     },
   },
-  apis: ["./*.js"], // Указываем текущий файл для сканирования JSDoc
+  apis: ["./*.js"],
 };
 
 // Генерация документации
@@ -61,49 +71,66 @@ app.get('/', (req, res) => {
 
 // Инициализация таблиц
 async function initDatabase() {
-  try {
-    const client = await pool.connect();
-    await client.query(`
-      CREATE TABLE IF NOT EXISTS books (
-        id SERIAL PRIMARY KEY,
-        title VARCHAR(255) NOT NULL,
-        author VARCHAR(255) NOT NULL,
-        owner_id INTEGER NOT NULL,
-        status VARCHAR(20) DEFAULT 'available',
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE CASCADE
-      )
-    `);
-    client.release();
-    console.log('Books database initialized');
-  } catch (error) {
-    console.error('Database initialization error:', error);
+  let retries = 5;
+  while (retries) {
+    try {
+      const client = await pool.connect();
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS books (
+          id SERIAL PRIMARY KEY,
+          title VARCHAR(255) NOT NULL,
+          author VARCHAR(255) NOT NULL,
+          owner_id INTEGER NOT NULL,
+          status VARCHAR(20) DEFAULT 'available',
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+      `);
+      client.release();
+      console.log('Books database initialized');
+      return;
+    } catch (error) {
+      console.error('Database initialization error, retrying...:', error.message);
+      retries -= 1;
+      await new Promise(resolve => setTimeout(resolve, 5000));
+    }
   }
+  console.error('Failed to initialize database after retries');
 }
 
 // Подключение к RabbitMQ
-let rabbitConnection;
+let rabbitChannel;
 async function connectRabbitMQ() {
-  if (rabbitConnection) return rabbitConnection;
-  
-  try {
-    rabbitConnection = await amqp.connect(RABBITMQ_URL);
-    return rabbitConnection;
-  } catch (error) {
-    console.error('RabbitMQ connection error:', error);
-    setTimeout(connectRabbitMQ, 5000);
+  let retries = 5;
+  while (retries) {
+    try {
+      const connection = await amqp.connect(RABBITMQ_URL);
+      const channel = await connection.createChannel();
+      rabbitChannel = channel;
+      console.log('Connected to RabbitMQ');
+      return channel;
+    } catch (error) {
+      console.error('RabbitMQ connection error, retrying...:', error.message);
+      retries -= 1;
+      await new Promise(resolve => setTimeout(resolve, 5000));
+    }
   }
+  console.error('Failed to connect to RabbitMQ after retries');
 }
 
 // Отправка события через RabbitMQ
 async function sendEvent(eventType, eventData) {
-  const connection = await connectRabbitMQ();
-  const channel = await connection.createChannel();
-  await channel.assertExchange('book_events', 'fanout', { durable: false });
-  channel.publish('book_events', '', Buffer.from(JSON.stringify({
-    type: eventType,
-    data: eventData
-  })));
+  try {
+    if (!rabbitChannel) {
+      await connectRabbitMQ();
+    }
+    await rabbitChannel.assertExchange('book_events', 'fanout', { durable: false });
+    rabbitChannel.publish('book_events', '', Buffer.from(JSON.stringify({
+      type: eventType,
+      data: eventData
+    })));
+  } catch (error) {
+    console.error('Error sending event to RabbitMQ:', error.message);
+  }
 }
 
 /**
