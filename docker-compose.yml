@@ -37,7 +37,7 @@ services:
 
   auth-service:
     build: ./auth-service
-    image: auth-service-image
+    image: derbisheva/auth-service-image
     container_name: auth-service-container
     ports:
       - "3001:3001"
@@ -54,7 +54,7 @@ services:
 
   books-service:
     build: ./books-service
-    image: books-service-image
+    image: derbisheva/books-service-image
     container_name: books-service-container
     ports:
       - "3002:3002"
@@ -71,7 +71,7 @@ services:
 
   exchange-service:
     build: ./exchange-service
-    image: exchange-service-image
+    image: derbisheva/exchange-service-image
     container_name: exchange-service-container
     ports:
       - "3003:3003"
