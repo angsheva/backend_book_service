@@ -3,7 +3,7 @@ name: CD Pipeline
 on:
   push:
     branches:
-      - main   # триггер на пуш в main
+      - main   
 
 jobs:
   build-and-deploy:
@@ -33,6 +33,7 @@ jobs:
           host: ${{ secrets.SSH_HOST }}
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_KEY }}
+          passphrase: password
           script: |
             cd ~/myapp
             docker compose pull
