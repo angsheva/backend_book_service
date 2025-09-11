@@ -21,11 +21,11 @@ jobs:
 
       - name: Build Docker image
         run: |
-          docker build -t ${{ secrets.DOCKER_USERNAME }}/myapp:latest .
+          docker compose build
 
       - name: Push Docker image
         run: |
-          docker push ${{ secrets.DOCKER_USERNAME }}/myapp:latest
+          docker compose push 
 
       - name: Deploy to server via SSH
         uses: appleboy/ssh-action@v1.2.0
