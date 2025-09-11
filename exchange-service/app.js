@@ -13,10 +13,9 @@ const cors = require('cors');
 app.use(cors());
 app.use(express.json());
 
-const RABBITMQ_URL = process.env.RABBITMQ_URL || 'amqp://localhost:5672';
-const DATABASE_URL = process.env.DATABASE_URL || 'postgresql://bookcrossing:password@localhost:5432/bookcrossing_db';
-const AUTH_SERVICE_URL = process.env.AUTH_SERVICE_URL || 'http://localhost:3001';
-
+const RABBITMQ_URL = 'amqp://rabbitmq:5672';
+const DATABASE_URL = 'postgresql://bookcrossing:password@postgres:5432/bookcrossing_db';
+const AUTH_SERVICE_URL = 'http://auth-service:3001';
 // Подключение к PostgreSQL
 const pool = new Pool({
   connectionString: DATABASE_URL,

@@ -8,15 +8,27 @@ const { Server } = require('socket.io');
 const cors = require('cors');
 const swaggerJsdoc = require("swagger-jsdoc");
 const swaggerUi = require("swagger-ui-express");
-
+console.log('=== DEBUG: CURRENT CODE VERSION ===');
+console.log('RABBITMQ_URL:', 'amqp://rabbitmq:5672');
+console.log('DATABASE_URL:', 'postgresql://bookcrossing:password@postgres:5432/bookcrossing_db');
+console.log('===================================');
 const app = express();
 app.use(express.json());
 app.use(cors());
 
 const SECRET_KEY = 'PDiddy_party';
-const RABBITMQ_URL = process.env.RABBITMQ_URL || 'amqp://localhost:5672';
-const DATABASE_URL = process.env.DATABASE_URL || 'postgresql://bookcrossing:password@localhost:5432/bookcrossing_db';
+
+// Исправленные значения с fallback на docker-compose имена
+const RABBITMQ_URL = 'amqp://rabbitmq:5672';
+const DATABASE_URL = 'postgresql://bookcrossing:password@postgres:5432/bookcrossing_db';
 const USER_CREATED_QUEUE = 'user_created';
+
+// Отладочный вывод
+console.log('Environment variables:');
+console.log('RABBITMQ_URL from env:', process.env.RABBITMQ_URL);
+console.log('DATABASE_URL from env:', process.env.DATABASE_URL);
+console.log('Using RABBITMQ_URL:', RABBITMQ_URL);
+console.log('Using DATABASE_URL:', DATABASE_URL);
 
 // Подключение к PostgreSQL
 const pool = new Pool({
@@ -47,7 +59,7 @@ const options = {
       },
     },
   },
-  apis: ["./*.js"], // Указываем текущий файл для сканирования JSDoc
+  apis: ["./*.js"],
 };
 
 // Генерация документации
@@ -61,43 +73,54 @@ app.get('/', (req, res) => {
   res.redirect('/docs');
 });
 
-// Инициализация таблиц
+// Инициализация таблиц с retry mechanism
 async function initDatabase() {
-  try {
-    const client = await pool.connect();
-    await client.query(`
-      CREATE TABLE IF NOT EXISTS users (
-        id SERIAL PRIMARY KEY,
-        username VARCHAR(50) UNIQUE NOT NULL,
-        password VARCHAR(255) NOT NULL,
-        email VARCHAR(100) UNIQUE NOT NULL,
-        full_name VARCHAR(100),
-        city VARCHAR(50),
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      )
-    `);
-    client.release();
-    console.log('Auth database initialized');
-  } catch (error) {
-    console.error('Database initialization error:', error);
+  let retries = 5;
+  while (retries) {
+    try {
+      const client = await pool.connect();
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS users (
+          id SERIAL PRIMARY KEY,
+          username VARCHAR(50) UNIQUE NOT NULL,
+          password VARCHAR(255) NOT NULL,
+          email VARCHAR(100) UNIQUE NOT NULL,
+          full_name VARCHAR(100),
+          city VARCHAR(50),
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+      `);
+      client.release();
+      console.log('Auth database initialized');
+      return;
+    } catch (error) {
+      console.error('Database initialization error, retrying...:', error.message);
+      retries -= 1;
+      await new Promise(resolve => setTimeout(resolve, 5000));
+    }
   }
+  console.error('Failed to initialize database after retries');
 }
 
-// Подключение к RabbitMQ
+// Подключение к RabbitMQ с retry mechanism
 let rabbitChannel;
 async function connectRabbitMQ() {
-  if (rabbitChannel) return rabbitChannel;
-  
-  try {
-    const connection = await amqp.connect(RABBITMQ_URL);
-    const channel = await connection.createChannel();
-    await channel.assertQueue(USER_CREATED_QUEUE, { durable: true });
-    rabbitChannel = channel;
-    return channel;
-  } catch (error) {
-    console.error('RabbitMQ connection error:', error);
-    setTimeout(connectRabbitMQ, 5000);
+  let retries = 5;
+  while (retries) {
+    try {
+      const connection = await amqp.connect(RABBITMQ_URL);
+      const channel = await connection.createChannel();
+      await channel.assertQueue(USER_CREATED_QUEUE, { durable: true });
+      rabbitChannel = channel;
+      console.log('Connected to RabbitMQ');
+      return channel;
+    } catch (error) {
+      console.error('RabbitMQ connection error, retrying...:', error.message);
+      retries -= 1;
+      await new Promise(resolve => setTimeout(resolve, 5000));
+    }
   }
+  console.error('Failed to connect to RabbitMQ after retries');
 }
 
 /**
@@ -248,17 +271,15 @@ app.post('/register', async (req, res) => {
     const user = result.rows[0];
     
     // Отправляем сообщение о создании пользователя
-    connectRabbitMQ().then(channel => {
-      if (channel) {
-        channel.sendToQueue(USER_CREATED_QUEUE, 
-          Buffer.from(JSON.stringify({
-            type: 'USER_CREATED',
-            data: user
-          })),
-          { persistent: true }
-        );
-      }
-    });
+    if (rabbitChannel) {
+      rabbitChannel.sendToQueue(USER_CREATED_QUEUE, 
+        Buffer.from(JSON.stringify({
+          type: 'USER_CREATED',
+          data: user
+        })),
+        { persistent: true }
+      );
+    }
     
     const token = jwt.sign({ id: user.id, username }, SECRET_KEY, { expiresIn: '1h' });
     res.status(201).json({ token, user });
